@@ -1,0 +1,164 @@
+import streamlit as st
+import numpy as np
+import matplotlib.pyplot as plt
+
+# -------------------- Simulador de Calentamiento -------------------- #
+def calcular_temperatura_saturacion(presion_kpa):
+    presion_mmhg = presion_kpa * 7.50062
+    A = 8.07131
+    B = 1730.63
+    C = 233.426
+    if presion_mmhg <= 0:
+        return 100.0
+    return B / (A - np.log10(presion_mmhg)) - C
+
+def calcular_entalpia_vaporizacion(temperatura):
+    T_kelvin = temperatura + 273.15
+    T_critica = 647.0969
+    if T_kelvin >= T_critica:
+        return 0.0
+    h_vap_kj_kg = 2256.4 * (1 - T_kelvin / T_critica) ** 0.38
+    return h_vap_kj_kg * 1000
+
+def simular_calentamiento(temp_inicial, masa_total, potencia, presion_kpa):
+    cp_agua = 4186
+    cp_hielo = 2090
+    lf = 333000
+    temp_saturacion = calcular_temperatura_saturacion(presion_kpa)
+    
+    temperatura = temp_inicial
+    if temperatura < 0:
+        masa_solida = masa_total
+        masa_liquida = 0
+        masa_vapor = 0
+    else:
+        masa_solida = 0
+        masa_liquida = masa_total
+        masa_vapor = 0
+
+    tiempos = []
+    temperaturas = []
+    masas_solidas = []
+    masas_liquidas = []
+    masas_vapor = []
+
+    tiempo = 0
+    dt = 1
+    energia_total_usada = 0
+    max_iteraciones = 100000
+
+    for i in range(max_iteraciones):
+        if masa_vapor >= masa_total - 1e-6:
+            break
+
+        energia = potencia * dt
+        energia_restante = energia
+        energia_total_usada += energia
+
+        if masa_solida > 1e-6 and temperatura < 0:
+            energia_necesaria = masa_solida * cp_hielo * (0 - temperatura)
+            if energia_restante >= energia_necesaria:
+                energia_restante -= energia_necesaria
+                temperatura = 0.0
+            else:
+                delta_t = energia_restante / (masa_solida * cp_hielo)
+                temperatura += delta_t
+                energia_restante = 0
+
+        elif masa_solida > 1e-6 and temperatura == 0:
+            energia_fusion_total = masa_solida * lf
+            if energia_restante >= energia_fusion_total:
+                energia_restante -= energia_fusion_total
+                masa_liquida += masa_solida
+                masa_solida = 0.0
+            else:
+                masa_fundida = energia_restante / lf
+                masa_fundida = min(masa_fundida, masa_solida)
+                masa_solida -= masa_fundida
+                masa_liquida += masa_fundida
+                energia_restante = 0
+
+        elif masa_liquida > 1e-6 and temperatura < temp_saturacion:
+            energia_necesaria = masa_liquida * cp_agua * (temp_saturacion - temperatura)
+            if energia_restante >= energia_necesaria:
+                energia_restante -= energia_necesaria
+                temperatura = temp_saturacion
+            else:
+                delta_t = energia_restante / (masa_liquida * cp_agua)
+                temperatura += delta_t
+                energia_restante = 0
+
+        elif masa_liquida > 1e-6 and temperatura >= temp_saturacion:
+            lv = calcular_entalpia_vaporizacion(temperatura)
+            if lv > 0:
+                masa_vaporizada = energia_restante / lv
+                masa_vaporizada = min(masa_vaporizada, masa_liquida)
+                masa_liquida -= masa_vaporizada
+                masa_vapor += masa_vaporizada
+                energia_restante = 0
+            else:
+                masa_vapor += masa_liquida
+                masa_liquida = 0.0
+                energia_restante = 0
+
+        tiempos.append(tiempo)
+        temperaturas.append(temperatura)
+        masas_solidas.append(masa_solida)
+        masas_liquidas.append(masa_liquida)
+        masas_vapor.append(masa_vapor)
+
+        tiempo += dt
+
+    return {
+        'tiempo': tiempos,
+        'temperatura': temperaturas,
+        'masa_solida': masas_solidas,
+        'masa_liquida': masas_liquidas,
+        'masa_vapor': masas_vapor,
+        'temp_saturacion': temp_saturacion,
+        'energia_total': energia_total_usada
+    }
+
+# -------------------- Interfaz Streamlit -------------------- #
+st.title("Simulador de Calentamiento del Agua")
+
+st.sidebar.header("Parámetros de Simulación")
+temp_inicial = st.sidebar.number_input("Temperatura inicial (°C)", value=20.0)
+masa_total = st.sidebar.number_input("Masa del agua (kg)", value=1.0)
+potencia = st.sidebar.number_input("Potencia de la parrilla (W)", value=2000.0)
+presion_kpa = st.sidebar.number_input("Presión atmosférica (kPa)", value=101.325)
+
+if st.sidebar.button("Iniciar Simulación"):
+    resultado = simular_calentamiento(temp_inicial, masa_total, potencia, presion_kpa)
+
+    st.success("¡Simulación completada!")
+    st.write(f"**Temperatura de saturación:** {resultado['temp_saturacion']:.2f} °C")
+    st.write(f"**Energía total usada:** {resultado['energia_total'] / 1000:.1f} kJ")
+
+    tiempo_min = np.array(resultado['tiempo']) / 60
+
+    fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+    axs = axs.flatten()
+
+    axs[0].plot(tiempo_min, resultado['temperatura'], 'r')
+    axs[0].set_title("Temperatura vs Tiempo")
+    axs[0].set_xlabel("Tiempo (min)")
+    axs[0].set_ylabel("Temperatura (°C)")
+
+    axs[1].plot(tiempo_min, resultado['masa_solida'], 'b')
+    axs[1].set_title("Masa Sólida vs Tiempo")
+    axs[1].set_xlabel("Tiempo (min)")
+    axs[1].set_ylabel("Masa (kg)")
+
+    axs[2].plot(tiempo_min, resultado['masa_liquida'], 'g')
+    axs[2].set_title("Masa Líquida vs Tiempo")
+    axs[2].set_xlabel("Tiempo (min)")
+    axs[2].set_ylabel("Masa (kg)")
+
+    axs[3].plot(tiempo_min, resultado['masa_vapor'], 'm')
+    axs[3].set_title("Masa Vapor vs Tiempo")
+    axs[3].set_xlabel("Tiempo (min)")
+    axs[3].set_ylabel("Masa (kg)")
+
+    plt.tight_layout()
+    st.pyplot(fig)
